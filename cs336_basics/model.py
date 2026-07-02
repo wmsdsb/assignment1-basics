@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from einops import einsum, rearrange
-from cs336_basics.nn_utils import silu, attention, run_rope
+from cs336_basics.nn_utils import *
 
 class Linear(nn.Module):
     def __init__(self, in_features, out_features, device=None, dtype=None):
@@ -178,12 +178,37 @@ class MultiheadAttention(nn.Module):
         return attention_out
 
 class TransformerBlock(nn.Module):
-    def __init__(self, d_model, num_heads, max_seq_len=None, theta=None, device=None, dtype=None):
+    def __init__(self, d_model, num_heads, d_ff:int, max_seq_len=None, theta=None, device=None, dtype=None):
         super().__init__()
-        self.attention = MultiheadAttention(d_model, num_heads, max_seq_len, theta, device, dtype)
+        self.ln1 = RMSNorm(d_model)
+        self.ln2 = RMSNorm(d_model)
         self.swiglu = SwiGLU(d_model, d_ff)
-        self.norm1 = RMSNorm(d_model)
-        self.norm2 = RMSNorm(d_model)
-        self.dropout = nn.Dropout(dropout)
-        self.device = device
-        self.dtype = dtype
+        self.mulheadattention = MultiheadAttention(d_model, num_heads, max_seq_len, theta)
+
+    def forward(self, x, token_positions: torch.Tensor = None):
+        x1 = self.ln1(x)
+        attention_out = self.mulheadattention(x1, token_positions)
+        x = x + attention_out
+        x2 = self.ln2(x)
+        swiglu_out = self.swiglu(x2)
+        x = x + swiglu_out
+        return x
+
+class TransformerLM(nn.Module):
+    def __init__(self, vocab_size, context_length, num_layers, d_model, num_heads, rope_theta, d_ff:int, max_seq_len=None, theta=None, device=None, dtype=None):
+        super().__init__()
+        self.transformer_blocks = nn.ModuleList([TransformerBlock(d_model, num_heads, d_ff, max_seq_len, rope_theta, device, dtype) for _ in range(num_layers)])
+        self.ln_final = RMSNorm(d_model, device=device, dtype=dtype)
+        self.lm = Linear(d_model, vocab_size, device, dtype)
+        self.embed = Embedding(vocab_size, d_model, device, dtype)
+    
+
+    def forward(self, x, token_positions: torch.Tensor = None):
+        if token_positions is None:
+            token_positions = torch.arange(x.shape[1], device=x.device).unsqueeze(0)
+        x = self.embed(x)
+        for block in self.transformer_blocks:
+            x = block(x, token_positions)
+        x = self.ln_final(x)
+        x = self.lm(x)
+        return x
