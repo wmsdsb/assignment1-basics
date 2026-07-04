@@ -11,6 +11,7 @@ from torch import Tensor
 from cs336_basics.tokenizer import Tokenizer
 from cs336_basics.nn_utils import RMSNorm
 import torch.nn as nn
+import math
 
 from cs336_basics.model import Linear, Embedding, SwiGLU, MultiheadAttention, TransformerBlock, TransformerLM
 from cs336_basics.nn_utils import attention, run_rope
@@ -217,7 +218,8 @@ def run_rope(
 ) -> Float[Tensor, " ... sequence_length d_k"]:
     """
     """
-    return run_rope(d_k, theta, max_seq_len, in_query_or_key, token_positions)
+    from cs336_basics.nn_utils import run_rope as _run_rope
+    return _run_rope(d_k, theta, max_seq_len, in_query_or_key, token_positions)
 
 
 def run_transformer_block(
@@ -468,7 +470,32 @@ def run_get_batch(
         is the sampled input sequences, and the second tuple item is the corresponding
         language modeling labels.
     """
-    raise NotImplementedError
+    # raise NotImplementedError
+
+    # 功能：从数据集中随机采样 batch_size 个长度为 context_length 的连续片段。
+    # 每个片段的起始位置是随机选择的，但是每个片段的长度都是 context_length。
+    # 输入：
+    # dataset：1D numpy 数组，包含数据集中的所有 token ID。
+    # batch_size：采样的 batch 大小。
+    # context_length：每个采样的片段的长度。
+    # device：PyTorch 设备字符串，用于将采样的输入序列和标签放置在指定设备上。
+    # 输出：
+    # Tuple of torch.LongTensors of shape (batch_size, context_length). The first tuple item
+    # is the sampled input sequences, and the second tuple item is the corresponding
+    # language modeling labels。
+    # 实现：
+    # 1. 从数据集中随机选择 batch_size 个起始位置。
+    # 2. 对于每个起始位置，从起始位置开始，采样 context_length 个 token。
+    # 3. 将采样的 token 转换为 torch.LongTensor 并移动到指定设备上。
+    # 4. 返回采样的输入序列和标签。
+    # 随机选择 batch_size 个起始位置
+    start_indices = torch.randint(0, len(dataset) - context_length, (batch_size,))
+    # 从每个起始位置开始，采样 context_length 个 token
+    input_sequences = torch.tensor([dataset[i:i + context_length + 1] for i in start_indices], dtype=torch.long).to(device)
+    inputs = input_sequences[:, :-1]
+    # 从每个输入序列中移除第一个 token，作为标签
+    labels = input_sequences[:, 1:]
+    return inputs, labels
 
 from cs336_basics.nn_utils import softmax
 def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, " ..."]:
@@ -516,14 +543,34 @@ def run_gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm:
 
     The gradients of the parameters (parameter.grad) should be modified in-place.
     """
-    raise NotImplementedError
+    # raise NotImplementedError
 
+    #梯度裁剪的作用是防止梯度爆炸。
+    #训练时，如果某个 batch 的 loss 特别大，算出来的梯度会很大，导致参数一步跳飞，模型直接崩了。
+    '''
+    1. 把所有参数的梯度拼成一个向量，算它的 L2 范数 total_norm
+    2. 如果 total_norm > max_l2_norm，就按比例缩放所有梯度：
+       
+       缩放系数 = max_l2_norm / total_norm
+       每个参数.grad *= 缩放系数
+       
+    3. 如果 total_norm <= max_l2_norm，不做任何事
+    '''
+    grads = [p.grad for p in parameters if p.grad is not None]
+    total_norm = torch.norm(torch.cat(grads))
+    if total_norm > max_l2_norm:
+        scale = max_l2_norm / total_norm
+        for p in parameters:
+            if p.grad is not None:
+                p.grad *= scale
+    return parameters
 
 def get_adamw_cls() -> Any:
     """
     Returns a torch.optim.Optimizer that implements AdamW.
     """
-    raise NotImplementedError
+    # raise NotImplementedError
+    return torch.optim.AdamW
 
 
 def run_get_lr_cosine_schedule(
@@ -550,8 +597,17 @@ def run_get_lr_cosine_schedule(
 
     Returns:
         Learning rate at the given iteration under the specified schedule.
-    """
-    raise NotImplementedError
+    """ 
+    # raise NotImplementedError
+    # linear warmup
+    if it < warmup_iters:
+        return max_learning_rate * it / warmup_iters
+    # cosine annealing
+    elif it >= cosine_cycle_iters:
+        return min_learning_rate
+    else:
+        progress = (it - warmup_iters) / (cosine_cycle_iters - warmup_iters)
+        return min_learning_rate + (max_learning_rate - min_learning_rate) * (1 + math.cos(math.pi * progress)) / 2
 
 
 def run_save_checkpoint(
@@ -570,7 +626,8 @@ def run_save_checkpoint(
             we've completed.
         out (str | os.PathLike | BinaryIO | IO[bytes]): Path or file-like object to serialize the model, optimizer, and iteration to.
     """
-    raise NotImplementedError
+    # raise NotImplementedError
+    torch.save({"model": model.state_dict(), "optimizer": optimizer.state_dict(), "iteration": iteration}, out)
 
 
 def run_load_checkpoint(
@@ -591,7 +648,11 @@ def run_load_checkpoint(
     Returns:
         int: the previously-serialized number of iterations.
     """
-    raise NotImplementedError
+    # raise NotImplementedError
+    checkpoint = torch.load(src)
+    model.load_state_dict(checkpoint["model"])
+    optimizer.load_state_dict(checkpoint["optimizer"])
+    return checkpoint["iteration"]
 
 
 def get_tokenizer(
